@@ -1,0 +1,14 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\I4Twins.Readings.Application\I4Twins.Readings.Application.csproj" />
+    <ProjectReference Include="..\I4Twins.Readings.Domain\I4Twins.Readings.Domain.csproj" />
+  </ItemGroup>
+
+</Project>

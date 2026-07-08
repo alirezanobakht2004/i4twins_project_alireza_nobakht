@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="src/I4Twins.Readings.Api/I4Twins.Readings.Api.csproj" Id="af569057-864d-4b75-93c4-5c0bb8255c8f" />
+  <Project Path="src/I4Twins.Readings.Application/I4Twins.Readings.Application.csproj" Id="3ee82b1c-ee2f-4361-a52c-8cd5aeaef34c" />
+  <Project Path="src/I4Twins.Readings.Domain/I4Twins.Readings.Domain.csproj" Id="7bbd42fc-ec0b-43f3-b229-1e1ba88b32a0" />
+  <Project Path="src/I4Twins.Readings.Infrastructure/I4Twins.Readings.Infrastructure.csproj" Id="f24539c7-097d-4105-b911-f07ea15ff69b" />
+  <Project Path="tests/I4Twins.Readings.Tests/I4Twins.Readings.Tests.csproj" Id="7d9d7b4b-8b29-4445-851c-a53a1572e7ae" />
+</Solution>
