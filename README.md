@@ -1,4 +1,3 @@
-````md
 # i4Twins Readings Service
 
 Backend technical task implementation for Dana Tadbir Integrated Intelligent Systems Co. / i4Twins.
