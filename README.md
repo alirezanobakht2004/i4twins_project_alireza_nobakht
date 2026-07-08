@@ -16,7 +16,7 @@ The input file is:
 
 ```text
 assets/readings.jsonl
-````
+```
 
 Each line contains one JSON reading.
 
@@ -812,7 +812,348 @@ The tests are based on these assumptions:
 
 ---
 
-## 20. Performance Considerations
+## 20. Detailed Unit Test Coverage
+
+The project currently contains 7 focused unit tests.
+
+The tests are intentionally written against the Domain layer instead of the API, SQLite repository, or JSONL file reader. The reason is that the most important business rules in this task are deduplication and aggregation. Testing them directly keeps the tests fast, deterministic, and independent from infrastructure concerns.
+
+### Testing Method
+
+The testing method is:
+
+```text
+Arrange: create small in-memory Reading objects with known values.
+Act: call the Domain service directly.
+Assert: compare the returned result with the expected count, duplicate count, bucket start, average, minimum, and maximum.
+```
+
+This means the tests do not require:
+
+* A running API server
+* A SQLite database file
+* The real `readings.jsonl` file
+* Network access
+* Any external service
+
+This choice was intentional because unit tests should verify business rules in isolation.
+
+### Test Input Construction
+
+All test readings are created through:
+
+```text
+Reading.Create(...)
+```
+
+This means test data goes through the same Domain validation path as production data. The tests do not bypass the domain model by manually constructing invalid internal objects.
+
+Example test input pattern:
+
+```csharp
+CreateReading(
+    deviceId: "PUMP-01",
+    metric: "temperature",
+    timestamp: "2025-06-01T08:00:10Z",
+    value: 10,
+    seq: 1)
+```
+
+The helper method asserts that the reading is valid before returning it. If a test accidentally creates invalid input, the test fails immediately.
+
+### Deduplication Unit Tests
+
+File:
+
+```text
+tests/I4Twins.Readings.Tests/Readings/ReadingDeduplicatorTests.cs
+```
+
+The deduplication tests verify the selected policy:
+
+```text
+Duplicate identity = deviceId + metric + timestamp + seq
+First valid reading wins
+value is not part of the identity
+```
+
+#### 1. `Deduplicate_KeepsSingleReading_WhenIdentityIsRepeated`
+
+Purpose:
+
+Verify that the same reading is stored only once when it appears twice.
+
+Input:
+
+| Field | First reading | Second reading |
+|---|---:|---:|
+| `deviceId` | `PUMP-01` | `PUMP-01` |
+| `metric` | `temperature` | `temperature` |
+| `timestamp` | `2025-06-01T08:00:00Z` | `2025-06-01T08:00:00Z` |
+| `value` | `70.1` | `70.1` |
+| `seq` | `100` | `100` |
+
+Expected output:
+
+| Result field | Expected value |
+|---|---:|
+| Unique readings | `1` |
+| Duplicates removed | `1` |
+| Conflicting duplicates | `0` |
+| Stored value | `70.1` |
+
+Reason:
+
+This proves the basic idempotency rule. If the exact same reading arrives twice, it must not be stored twice.
+
+---
+
+#### 2. `Deduplicate_KeepsFirstReading_WhenDuplicateHasDifferentValue`
+
+Purpose:
+
+Verify how the system handles duplicate identities with different values.
+
+Input:
+
+| Field | First reading | Second reading |
+|---|---:|---:|
+| `deviceId` | `PUMP-01` | `PUMP-01` |
+| `metric` | `temperature` | `temperature` |
+| `timestamp` | `2025-06-01T08:00:00Z` | `2025-06-01T08:00:00Z` |
+| `value` | `70.1` | `99.9` |
+| `seq` | `100` | `100` |
+
+Expected output:
+
+| Result field | Expected value |
+|---|---:|
+| Unique readings | `1` |
+| Duplicates removed | `1` |
+| Conflicting duplicates | `1` |
+| Stored value | `70.1` |
+
+Reason:
+
+The task defines duplicate identity using `deviceId`, `metric`, `ts`, and `seq`. It does not include `value`. Therefore, the second record is still a duplicate even though its value is different. The selected policy is first-valid-reading-wins, so the first value is kept and the second value is skipped.
+
+---
+
+#### 3. `Deduplicate_DoesNotRemoveReading_WhenSeqIsDifferent`
+
+Purpose:
+
+Verify that `seq` is part of the duplicate identity.
+
+Input:
+
+| Field | First reading | Second reading |
+|---|---:|---:|
+| `deviceId` | `PUMP-01` | `PUMP-01` |
+| `metric` | `temperature` | `temperature` |
+| `timestamp` | `2025-06-01T08:00:00Z` | `2025-06-01T08:00:00Z` |
+| `value` | `70.1` | `70.1` |
+| `seq` | `100` | `101` |
+
+Expected output:
+
+| Result field | Expected value |
+|---|---:|
+| Unique readings | `2` |
+| Duplicates removed | `0` |
+| Conflicting duplicates | `0` |
+
+Reason:
+
+This prevents the deduplication logic from being too aggressive. Two readings with different sequence numbers are treated as separate readings, even if all other fields are the same.
+
+---
+
+### Aggregation Unit Tests
+
+File:
+
+```text
+tests/I4Twins.Readings.Tests/Readings/ReadingAggregatorTests.cs
+```
+
+The aggregation tests verify these rules:
+
+```text
+Use only the requested deviceId and metric.
+Use the [from, to) time range.
+Group readings into fixed-size time buckets.
+Calculate count, average, minimum, and maximum.
+Return buckets ordered by bucket start time.
+Omit empty buckets.
+Do not depend on input order.
+```
+
+#### 4. `Aggregate_ReturnsCorrectStatistics_ForSingleBucket`
+
+Purpose:
+
+Verify count, average, minimum, and maximum for a single bucket.
+
+Input:
+
+| Reading | Timestamp | Value | Bucket |
+|---|---|---:|---|
+| 1 | `2025-06-01T08:00:10Z` | `10` | `08:00:00` |
+| 2 | `2025-06-01T08:00:20Z` | `20` | `08:00:00` |
+| 3 | `2025-06-01T08:00:30Z` | `30` | `08:00:00` |
+
+Query:
+
+| Parameter | Value |
+|---|---|
+| `deviceId` | `PUMP-01` |
+| `metric` | `temperature` |
+| `from` | `2025-06-01T08:00:00Z` |
+| `to` | `2025-06-01T08:01:00Z` |
+| `bucketSize` | `1 minute` |
+
+Expected output:
+
+| Field | Expected value |
+|---|---:|
+| Bucket count | `1` |
+| Bucket start | `2025-06-01T08:00:00Z` |
+| Count | `3` |
+| Average | `20` |
+| Min | `10` |
+| Max | `30` |
+
+Reason:
+
+This confirms the core aggregation statistics required by the API contract.
+
+---
+
+#### 5. `Aggregate_GroupsOutOfOrderReadings_IntoCorrectBuckets`
+
+Purpose:
+
+Verify that aggregation is based on timestamps, not input order.
+
+Input order:
+
+| Input order | Timestamp | Value | Expected bucket |
+|---:|---|---:|---|
+| 1 | `2025-06-01T08:02:10Z` | `30` | `08:02:00` |
+| 2 | `2025-06-01T08:00:10Z` | `10` | `08:00:00` |
+| 3 | `2025-06-01T08:01:10Z` | `20` | `08:01:00` |
+
+Query:
+
+| Parameter | Value |
+|---|---|
+| `from` | `2025-06-01T08:00:00Z` |
+| `to` | `2025-06-01T08:03:00Z` |
+| `bucketSize` | `1 minute` |
+
+Expected output:
+
+| Output order | Bucket start | Average |
+|---:|---|---:|
+| 1 | `2025-06-01T08:00:00Z` | `10` |
+| 2 | `2025-06-01T08:01:00Z` | `20` |
+| 3 | `2025-06-01T08:02:00Z` | `30` |
+
+Reason:
+
+The input file is deliberately messy and not sorted by time. This test proves that the aggregation result remains correct and ordered even when the input readings arrive out of order.
+
+---
+
+#### 6. `Aggregate_UsesInclusiveFromAndExclusiveTo`
+
+Purpose:
+
+Verify the selected time range rule:
+
+```text
+[from, to)
+```
+
+Input:
+
+| Reading | Timestamp | Value | Expected behavior |
+|---|---|---:|---|
+| 1 | `2025-06-01T08:00:00Z` | `10` | Included because it is exactly at `from` |
+| 2 | `2025-06-01T08:00:59Z` | `20` | Included because it is before `to` |
+| 3 | `2025-06-01T08:01:00Z` | `99` | Excluded because it is exactly at `to` |
+
+Query:
+
+| Parameter | Value |
+|---|---|
+| `from` | `2025-06-01T08:00:00Z` |
+| `to` | `2025-06-01T08:01:00Z` |
+| `bucketSize` | `1 minute` |
+
+Expected output:
+
+| Field | Expected value |
+|---|---:|
+| Bucket count | `1` |
+| Count | `2` |
+| Average | `15` |
+| Min | `10` |
+| Max | `20` |
+
+Reason:
+
+Using `[from, to)` avoids overlap between adjacent aggregation windows. A reading exactly at `to` belongs to the next time window, not the current one.
+
+---
+
+#### 7. `Aggregate_OmitsEmptyBuckets`
+
+Purpose:
+
+Verify the selected empty-bucket behavior.
+
+Input:
+
+| Reading | Timestamp | Value | Bucket |
+|---|---|---:|---|
+| 1 | `2025-06-01T08:00:10Z` | `10` | `08:00:00` |
+| 2 | `2025-06-01T08:02:10Z` | `30` | `08:02:00` |
+
+Query:
+
+| Parameter | Value |
+|---|---|
+| `from` | `2025-06-01T08:00:00Z` |
+| `to` | `2025-06-01T08:03:00Z` |
+| `bucketSize` | `1 minute` |
+
+Expected output:
+
+| Output order | Bucket start | Included? |
+|---:|---|---|
+| 1 | `2025-06-01T08:00:00Z` | Yes |
+| - | `2025-06-01T08:01:00Z` | No, empty bucket omitted |
+| 2 | `2025-06-01T08:02:00Z` | Yes |
+
+Reason:
+
+The task allows either returning empty buckets with count zero or omitting them. This implementation chooses to omit empty buckets, so the behavior is explicitly tested.
+
+### Test Execution Result
+
+The final local test run produced:
+
+```text
+Test summary: total: 7, failed: 0, succeeded: 7, skipped: 0
+```
+
+This confirms that all focused unit tests pass.
+
+---
+
+## 21. Performance Considerations
 
 The provided file contains roughly 2,150 readings, so the implementation is intentionally simple.
 
@@ -870,7 +1211,7 @@ For a very large production dataset, aggregation could be optimized by:
 
 ---
 
-## 21. Extensibility
+## 22. Extensibility
 
 The design supports future extension without widespread changes.
 
@@ -929,7 +1270,7 @@ If future requirements include sum, median, or percentile, the preferred approac
 
 ---
 
-## 22. Error Handling
+## 23. Error Handling
 
 The service avoids crashing on messy data.
 
@@ -944,7 +1285,7 @@ Unexpected errors, such as missing input file or database failure, are allowed t
 
 ---
 
-## 23. Git History and Commit Rationale
+## 24. Git History and Commit Rationale
 
 The project was implemented step by step with meaningful commits instead of one final commit.
 
@@ -1171,7 +1512,7 @@ Verified restore, build, and tests successfully
 
 ---
 
-## 24. Known Limitations
+## 25. Known Limitations
 
 This implementation intentionally avoids unnecessary production complexity.
 
@@ -1192,7 +1533,7 @@ These were not included because the task scope focuses on ingestion, cleaning, d
 
 ---
 
-## 25. Future Improvements
+## 26. Future Improvements
 
 Possible future improvements:
 
@@ -1209,7 +1550,7 @@ Possible future improvements:
 
 ---
 
-## 26. AI Usage Disclosure
+## 27. AI Usage Disclosure
 
 AI assistance was used during this task.
 
@@ -1243,7 +1584,7 @@ Focused unit tests for deduplication and aggregation
 
 ---
 
-## 27. Summary
+## 28. Summary
 
 This project implements the required backend service with a simple, maintainable architecture.
 
